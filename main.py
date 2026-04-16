@@ -52,8 +52,13 @@ def tableau_signin(server: str, site_name: str, pat_name: str, pat_secret: str):
         }
     }
     response = requests.post(url, json=payload, timeout=30)
+
+    if not response.text:
+        raise Exception(f"Tableau returned empty response. Status: {response.status_code}. URL tried: {url}")
+
     if response.status_code != 200:
         raise Exception(f"Tableau auth failed ({response.status_code}): {response.text}")
+
     data = response.json()
     token = data["credentials"]["token"]
     site_id = data["credentials"]["site"]["id"]
