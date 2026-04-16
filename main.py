@@ -51,7 +51,7 @@ def tableau_signin(server: str, site_name: str, pat_name: str, pat_secret: str):
             "site": {"contentUrl": site_name}
         }
     }
-    response = requests.post(url, json=payload, timeout=30)
+    response = requests.post(url, json=payload, timeout=30, headers={"Accept": "application/json", "Content-Type": "application/json"})
 
     if not response.text:
         raise Exception(f"Tableau returned empty response. Status: {response.status_code}. URL tried: {url}")
@@ -117,7 +117,7 @@ async def get_view_id(req: LookupRequest):
     )
     try:
         url = f"{req.tableau_server}/api/3.19/sites/{site_id}/views"
-        headers = {"x-tableau-auth": token}
+        headers = {"x-tableau-auth": token, "Accept": "application/json"}
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code != 200:
             raise Exception(f"Failed to list views ({response.status_code}): {response.text}")
