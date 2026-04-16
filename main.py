@@ -103,7 +103,6 @@ def health_check():
 
 @app.post("/get-view-id")
 async def get_view_id(req: LookupRequest):
-    """Helper endpoint to find view IDs from your Tableau site."""
     token, site_id = tableau_signin(
         req.tableau_server,
         req.site_name,
@@ -114,6 +113,8 @@ async def get_view_id(req: LookupRequest):
         url = f"{req.tableau_server}/api/3.19/sites/{site_id}/views"
         headers = {"x-tableau-auth": token}
         response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=response.text)
         views = response.json().get("views", {}).get("view", [])
         return {
             "views": [
