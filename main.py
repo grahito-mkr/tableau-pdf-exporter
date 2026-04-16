@@ -116,23 +116,13 @@ async def get_view_id(req: LookupRequest):
         req.pat_secret
     )
     try:
-        url = f"{req.tableau_server}/api/3.19/sites/{site_id}/views?filter=name:eq:TestBulkDownload"
+        url = f"{req.tableau_server}/api/3.19/sites/{site_id}/workbooks?filter=contentUrl:eq:TestingShipMode-BulkDownload"
         headers = {"x-tableau-auth": token, "Accept": "application/json"}
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code != 200:
-            raise Exception(f"Failed to list views ({response.status_code}): {response.text}")
-        views = response.json().get("views", {}).get("view", [])
-        return {
-            "total": len(views),
-            "views": [
-                {
-                    "id": v["id"],
-                    "name": v["name"],
-                    "workbook": v.get("owner", {}).get("name", "")
-                }
-                for v in views
-            ]
-        }
+            raise Exception(f"Failed ({response.status_code}): {response.text}")
+        workbooks = response.json().get("workbooks", {}).get("workbook", [])
+        return {"workbooks": workbooks}
     finally:
         tableau_signout(req.tableau_server, token)
 
