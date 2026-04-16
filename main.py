@@ -116,7 +116,7 @@ async def get_view_id(req: LookupRequest):
         req.pat_secret
     )
     try:
-        url = f"{req.tableau_server}/api/3.19/sites/{site_id}/views"
+        url = f"{req.tableau_server}/api/3.19/sites/{site_id}/views?filter=name:eq:TestBulkDownload"
         headers = {"x-tableau-auth": token, "Accept": "application/json"}
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code != 200:
