@@ -51,8 +51,8 @@ jobs_lock = threading.Lock()
 EXPORT_CONFIG = {
     "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
     "site_name":      "mekariinsight",
-    "pat_name":       "tableau-bulk-download",
-    "pat_secret":     "Xvm3oCPtRAaeYnzgwHBM5A==:gnEcddB9yjARiH6XlwoEFlmFjMw76BAT",
+    "pat_name":       "your-pat-name",
+    "pat_secret":     "your-pat-secret",
     "view_id":        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb",
     "filter_field":   "Region",
     "orientation":    "Landscape",   # "Landscape" or "Portrait"
@@ -201,6 +201,12 @@ def _run_export_job(job_id, req):
 def health():
     active = sum(1 for j in jobs.values() if j["status"] not in ("done", "error"))
     return {"status": "ok", "version": "4.0", "active_jobs": active}
+
+
+@app.get("/config")
+def get_config():
+    """Returns only the filter_field so the HTML knows which filter to read."""
+    return {"filter_field": EXPORT_CONFIG["filter_field"]}
 
 
 @app.post("/export-pdf/start")
