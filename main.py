@@ -1,18 +1,11 @@
 """
-main.py — Tableau Bulk PDF Exporter v5
-========================================
+main.py — Tableau Bulk PDF Exporter
+======================================
 Exports one PDF per filter value, bundles into a ZIP file.
-Supports custom vizWidth/vizHeight for any dashboard size.
 
 Deploy on Railway:
-  - Procfile:          web: uvicorn main:app --host 0.0.0.0 --port $PORT
-  - requirements.txt:  fastapi uvicorn requests pypdf python-multipart
-
-Endpoints:
-  POST /export-pdf/start          → start job, returns job_id
-  GET  /export-pdf/progress/{id}  → poll live progress
-  GET  /export-pdf/download/{id}  → download ZIP when done
-  GET  /                          → health check
+  Procfile:         web: uvicorn main:app --host 0.0.0.0 --port $PORT
+  requirements.txt: fastapi uvicorn requests pypdf python-multipart
 """
 
 import io
@@ -39,7 +32,7 @@ JOB_TTL_MINUTES          = 60
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Tableau Bulk PDF Exporter", version="5.0")
+app = FastAPI(title="Tableau Bulk PDF Exporter", version="4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,7 +45,7 @@ jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 
 
-# ── Request models ────────────────────────────────────────────────────────────
+# ── Models ────────────────────────────────────────────────────────────────────
 
 class ExportRequest(BaseModel):
     tableau_server: str
@@ -62,8 +55,6 @@ class ExportRequest(BaseModel):
     view_id:        str
     filter_field:   str
     filter_values:  list[str]
-    viz_width:      int = 1400
-    viz_height:     int = 900
 
 
 class LookupRequest(BaseModel):
@@ -112,37 +103,14 @@ def safe_filename(value):
     return (name[:100] + ".pdf") if len(name) > 100 else f"{name}.pdf"
 
 
-def download_one_pdf(server, site_id, view_id, token,
-                     filter_field, filter_value, viz_width, viz_height):
-    """
-    Uses A4 paper size. Orientation chosen from width vs height.
-    Manually encodes the vf_ filter key using %20 (not +) for spaces,
-    because Tableau Online ignores filters when + encoding is used.
-    """
-    import urllib.parse
-
-    orientation = "Landscape" if viz_width > viz_height else "Portrait"
-
-    # Build base params (safe characters only — no spaces)
-    base_params = urllib.parse.urlencode({
-        "type":        "A4",
-        "orientation": orientation,
-    })
-
-    # Encode filter key and value separately using %20 for spaces
-    filter_key   = urllib.parse.quote(f"vf_{filter_field}", safe="")
-    filter_val   = urllib.parse.quote(str(filter_value),   safe="")
-    filter_param = f"{filter_key}={filter_val}"
-
-    full_url = (
-        f"{server}/api/3.19/sites/{site_id}/views/{view_id}/pdf"
-        f"?{base_params}&{filter_param}"
-    )
-
-    print(f"  PDF request: ...{view_id}/pdf?{base_params}&{filter_param}")
-
+def download_one_pdf(server, site_id, view_id, token, filter_field, filter_value):
     resp = requests.get(
-        full_url,
+        f"{server}/api/3.19/sites/{site_id}/views/{view_id}/pdf",
+        params={
+            "type":        "A4",
+            "orientation": "Portrait",
+            f"vf_{filter_field}": filter_value,
+        },
         headers={"x-tableau-auth": token},
         timeout=90,
     )
@@ -179,7 +147,6 @@ def _run_export_job(job_id, req):
                     pdf = download_one_pdf(
                         req.tableau_server, site_id, req.view_id,
                         token, req.filter_field, value,
-                        req.viz_width, req.viz_height,
                     )
                     results[index] = (value, pdf, "")
                 except Exception as e:
@@ -217,7 +184,7 @@ def _run_export_job(job_id, req):
 @app.get("/")
 def health():
     active = sum(1 for j in jobs.values() if j["status"] not in ("done", "error"))
-    return {"status": "ok", "version": "5.0", "active_jobs": active}
+    return {"status": "ok", "version": "4.0", "active_jobs": active}
 
 
 @app.post("/export-pdf/start")
@@ -303,7 +270,6 @@ async def get_view_id(req: LookupRequest):
             f"{req.tableau_server}/api/3.19/sites/{site_id}/workbooks",
             headers=headers, timeout=30,
         ).json().get("workbooks", {}).get("workbook", [])
-
         result = []
         for wb in wbs:
             views = requests.get(
@@ -321,7 +287,7 @@ async def get_view_id(req: LookupRequest):
         tableau_signout(req.tableau_server, token)
 
 
-# ── Cleanup thread ────────────────────────────────────────────────────────────
+# ── Cleanup ───────────────────────────────────────────────────────────────────
 
 def _cleanup_loop():
     import time
