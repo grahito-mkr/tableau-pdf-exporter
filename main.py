@@ -115,16 +115,16 @@ def safe_filename(value):
 def download_one_pdf(server, site_id, view_id, token,
                      filter_field, filter_value, viz_width, viz_height):
     """
-    type=unformatted + vizWidth/vizHeight = no paper size constraints.
-    Renders the dashboard at exactly the pixel size you specify,
-    so wide or narrow dashboards all export correctly.
+    Uses A4 paper size. Orientation is chosen automatically:
+    - viz_width > viz_height  → Landscape  (wide dashboards)
+    - viz_width <= viz_height → Portrait   (tall/narrow dashboards)
     """
+    orientation = "Landscape" if viz_width > viz_height else "Portrait"
     resp = requests.get(
         f"{server}/api/3.19/sites/{site_id}/views/{view_id}/pdf",
         params={
-            "type":      "unformatted",
-            "vizWidth":  viz_width,
-            "vizHeight": viz_height,
+            "type":        "A4",
+            "orientation": orientation,
             f"vf_{filter_field}": filter_value,
         },
         headers={"x-tableau-auth": token},
