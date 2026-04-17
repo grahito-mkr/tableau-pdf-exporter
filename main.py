@@ -54,7 +54,7 @@ EXPORT_CONFIG = {
     "pat_name":       "tableau-bulk-download",
     "pat_secret":     "Xvm3oCPtRAaeYnzgwHBM5A==:gnEcddB9yjARiH6XlwoEFlmFjMw76BAT",
     "view_id":        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb",
-    "filter_field":   "Region",
+    "filter_field":   "Customer Name",
     "orientation":    "Landscape",   # "Landscape" or "Portrait"
 }
 
