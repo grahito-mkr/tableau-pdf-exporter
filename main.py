@@ -32,8 +32,8 @@ from pydantic import BaseModel
 EXPORT_CONFIG = {
     "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
     "site_name":      "mekariinsight",
-    "pat_name":       os.environ.get("PAT_NAME", ""),
-    "pat_secret":     os.environ.get("PAT_SECRET", ""),
+    "pat_name":       os.environ.get("CLIENT_A_PAT_NAME", ""),
+    "pat_secret":     os.environ.get("CLIENT_A_PAT_SECRET", ""),
     "view_id":        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb",
     "filter_field":   "Region",
     "orientation":    "Landscape",   # "Landscape" or "Portrait"
