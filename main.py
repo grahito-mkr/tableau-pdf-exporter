@@ -1,7 +1,12 @@
 """
-main.py — Tableau Bulk PDF Exporter
-======================================
-Exports one PDF per filter value, bundles into a ZIP file.
+main.py — Tableau Bulk PDF Exporter (Multi-Client)
+====================================================
+One deployment serves all clients.
+Each client is identified by their Tableau workbook name.
+
+To add a new client:
+  1. Add an entry to CLIENT_CONFIGS below using their exact Tableau workbook name
+  2. Commit to GitHub → Railway auto-redeploys
 
 Deploy on Railway:
   Procfile:         web: uvicorn main:app --host 0.0.0.0 --port $PORT
@@ -9,6 +14,7 @@ Deploy on Railway:
 """
 
 import io
+import os
 import re
 import uuid
 import zipfile
@@ -24,39 +30,67 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  CLIENT CONFIGS — add one entry per client
+#  Key = exact Tableau workbook name (case-sensitive)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── PAT credentials loaded from Railway environment variables ────────────────
+# Never hardcode secrets here. Set them in Railway dashboard → Variables tab.
+#
+# Naming convention:  {CLIENT_KEY}_PAT_NAME  and  {CLIENT_KEY}_PAT_SECRET
+# Example Railway vars for two clients:
+#   MEKARI_PAT_NAME       = tableau-bulk-download
+#   MEKARI_PAT_SECRET     = Xvm3oCPtRAaeYnzgwHBM5A==:gnEcc...
+#   CLIENT_B_PAT_NAME     = their-pat-name
+#   CLIENT_B_PAT_SECRET   = their-secret
+
+def env(key):
+    """Read a required env var. Raises a clear error if missing."""
+    val = os.environ.get(key)
+    if not val:
+        raise RuntimeError(
+            f"Missing environment variable: {key}\n"
+            f"Set it in Railway dashboard → Variables tab."
+        )
+    return val
+
+
+CLIENT_CONFIGS = {
+    "Testing Ship Mode - Bulk Download": {
+        "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
+        "site_name":      "mekariinsight",
+        "pat_name":       env("CLIENT_A_PAT_NAME"),
+        "pat_secret":     env("CLIENT_A_PAT_SECRET"),
+        "view_id":        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb",
+        "filter_field":   "Customer Name",
+        "orientation":    "Landscape",
+    },
+
+    # ── Add more clients below ────────────────────────────────────────────────
+    # "Client B Workbook Name": {
+    #     "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
+    #     "site_name":      "clientbsite",
+    #     "pat_name":       env("CLIENT_B_PAT_NAME"),
+    #     "pat_secret":     env("CLIENT_B_PAT_SECRET"),
+    #     "view_id":        "their-view-id",
+    #     "filter_field":   "Customer Name",
+    #     "orientation":    "Portrait",
+    # },
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
 
 MAX_CONCURRENT_DOWNLOADS = 8
 MAX_WORKERS              = 16
 JOB_TTL_MINUTES          = 60
 
-# ── App ───────────────────────────────────────────────────────────────────────
-
-app = FastAPI(title="Tableau Bulk PDF Exporter", version="4.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="Tableau Bulk PDF Exporter", version="5.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 
-
-# ── Hardcoded export config ──────────────────────────────────────────────────
-# Set these once — users never see or touch them
-
-EXPORT_CONFIG = {
-    "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
-    "site_name":      "mekariinsight",
-    "pat_name":       "tableau-bulk-download",
-    "pat_secret":     "Xvm3oCPtRAaeYnzgwHBM5A==:gnEcddB9yjARiH6XlwoEFlmFjMw76BAT",
-    "view_id":        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb",
-    "filter_field":   "Customer Name",
-    "orientation":    "Landscape",   # "Landscape" or "Portrait"
-}
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
@@ -68,14 +102,7 @@ class ExportRequest(BaseModel):
     view_id:        str
     filter_field:   str
     filter_values:  list[str]
-    orientation:    str = 'Landscape'
-
-
-class LookupRequest(BaseModel):
-    tableau_server: str
-    site_name:      str
-    pat_name:       str
-    pat_secret:     str
+    orientation:    str = "Landscape"
 
 
 # ── Tableau helpers ───────────────────────────────────────────────────────────
@@ -83,13 +110,11 @@ class LookupRequest(BaseModel):
 def tableau_signin(server, site_name, pat_name, pat_secret):
     resp = requests.post(
         f"{server}/api/3.19/auth/signin",
-        json={
-            "credentials": {
-                "personalAccessTokenName":   pat_name,
-                "personalAccessTokenSecret": pat_secret,
-                "site": {"contentUrl": site_name},
-            }
-        },
+        json={"credentials": {
+            "personalAccessTokenName":   pat_name,
+            "personalAccessTokenSecret": pat_secret,
+            "site": {"contentUrl": site_name},
+        }},
         headers={"Accept": "application/json", "Content-Type": "application/json"},
         timeout=30,
     )
@@ -103,11 +128,8 @@ def tableau_signin(server, site_name, pat_name, pat_secret):
 
 def tableau_signout(server, token):
     try:
-        requests.post(
-            f"{server}/api/3.19/auth/signout",
-            headers={"x-tableau-auth": token},
-            timeout=10,
-        )
+        requests.post(f"{server}/api/3.19/auth/signout",
+                      headers={"x-tableau-auth": token}, timeout=10)
     except Exception:
         pass
 
@@ -117,8 +139,8 @@ def safe_filename(value):
     return (name[:100] + ".pdf") if len(name) > 100 else f"{name}.pdf"
 
 
-def download_one_pdf(server, site_id, view_id, token, filter_field, filter_value,
-                     orientation="Landscape"):
+def download_one_pdf(server, site_id, view_id, token,
+                     filter_field, filter_value, orientation="Landscape"):
     resp = requests.get(
         f"{server}/api/3.19/sites/{site_id}/views/{view_id}/pdf",
         params={
@@ -150,10 +172,9 @@ def _run_export_job(job_id, req):
             req.pat_name, req.pat_secret,
         )
 
-        total   = len(req.filter_values)
-        results = [None] * total
+        total     = len(req.filter_values)
+        results   = [None] * total
         semaphore = threading.Semaphore(MAX_CONCURRENT_DOWNLOADS)
-
         update(status="exporting")
 
         def fetch(index, value):
@@ -161,8 +182,7 @@ def _run_export_job(job_id, req):
                 try:
                     pdf = download_one_pdf(
                         req.tableau_server, site_id, req.view_id,
-                        token, req.filter_field, value,
-                        req.orientation,
+                        token, req.filter_field, value, req.orientation,
                     )
                     results[index] = (value, pdf, "")
                 except Exception as e:
@@ -200,56 +220,49 @@ def _run_export_job(job_id, req):
 @app.get("/")
 def health():
     active = sum(1 for j in jobs.values() if j["status"] not in ("done", "error"))
-    return {"status": "ok", "version": "4.0", "active_jobs": active}
+    return {"status": "ok", "version": "5.0", "active_jobs": active,
+            "registered_clients": list(CLIENT_CONFIGS.keys())}
 
 
 @app.get("/config")
-def get_config():
-    """Returns only the filter_field so the HTML knows which filter to read."""
-    return {"filter_field": EXPORT_CONFIG["filter_field"]}
+def get_config(workbook: str):
+    """
+    Returns the filter_field for a given workbook name.
+    Called by the HTML on load to know which filter to read.
+    e.g. GET /config?workbook=Testing+Ship+Mode+-+Bulk+Download
+    """
+    cfg = CLIENT_CONFIGS.get(workbook)
+    if not cfg:
+        raise HTTPException(404, f"No config found for workbook: '{workbook}'")
+    return {"filter_field": cfg["filter_field"]}
 
 
 @app.post("/export-pdf/start")
-async def start_export(req: ExportRequest):
-    if not req.filter_values:
-        raise HTTPException(400, "filter_values is empty")
-
-    job_id = str(uuid.uuid4())
-    with jobs_lock:
-        jobs[job_id] = {
-            "status":       "queued",
-            "total":        len(req.filter_values),
-            "done":         0,
-            "failed":       0,
-            "failed_names": [],
-            "zip_bytes":    None,
-            "error":        None,
-            "created_at":   datetime.utcnow(),
-        }
-
-    threading.Thread(target=_run_export_job, args=(job_id, req), daemon=True).start()
-    return {"job_id": job_id, "total": len(req.filter_values)}
-
-
-@app.post("/export-pdf/start-preset")
-async def start_export_preset(body: dict):
+async def start_export(body: dict):
     """
-    Simplified endpoint for end users.
-    All Tableau credentials are hardcoded server-side.
-    Frontend only sends: { "filter_values": ["South", "East", ...] }
+    Start an export job. Looks up config by workbook name.
+    Body: { "workbook_name": "...", "filter_values": [...] }
     """
+    workbook_name = body.get("workbook_name", "")
     filter_values = body.get("filter_values", [])
+
+    if not workbook_name:
+        raise HTTPException(400, "workbook_name is required")
     if not filter_values:
         raise HTTPException(400, "filter_values is empty")
 
+    cfg = CLIENT_CONFIGS.get(workbook_name)
+    if not cfg:
+        raise HTTPException(404, f"No config found for workbook: '{workbook_name}'")
+
     req = ExportRequest(
-        tableau_server = EXPORT_CONFIG["tableau_server"],
-        site_name      = EXPORT_CONFIG["site_name"],
-        pat_name       = EXPORT_CONFIG["pat_name"],
-        pat_secret     = EXPORT_CONFIG["pat_secret"],
-        view_id        = EXPORT_CONFIG["view_id"],
-        filter_field   = EXPORT_CONFIG["filter_field"],
-        orientation    = EXPORT_CONFIG["orientation"],
+        tableau_server = cfg["tableau_server"],
+        site_name      = cfg["site_name"],
+        pat_name       = cfg["pat_name"],
+        pat_secret     = cfg["pat_secret"],
+        view_id        = cfg["view_id"],
+        filter_field   = cfg["filter_field"],
+        orientation    = cfg["orientation"],
         filter_values  = filter_values,
     )
 
@@ -317,35 +330,6 @@ async def delete_job(job_id: str):
     with jobs_lock:
         jobs.pop(job_id, None)
     return {"deleted": job_id}
-
-
-@app.post("/get-view-id")
-async def get_view_id(req: LookupRequest):
-    token, site_id = tableau_signin(
-        req.tableau_server, req.site_name,
-        req.pat_name, req.pat_secret,
-    )
-    try:
-        headers = {"x-tableau-auth": token, "Accept": "application/json"}
-        wbs = requests.get(
-            f"{req.tableau_server}/api/3.19/sites/{site_id}/workbooks",
-            headers=headers, timeout=30,
-        ).json().get("workbooks", {}).get("workbook", [])
-        result = []
-        for wb in wbs:
-            views = requests.get(
-                f"{req.tableau_server}/api/3.19/sites/{site_id}/workbooks/{wb['id']}/views",
-                headers=headers, timeout=30,
-            ).json().get("views", {}).get("view", [])
-            for v in views:
-                result.append({
-                    "workbook":  wb["name"],
-                    "view_name": v["name"],
-                    "view_id":   v["id"],
-                })
-        return {"views": result}
-    finally:
-        tableau_signout(req.tableau_server, token)
 
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
