@@ -51,8 +51,8 @@ jobs_lock = threading.Lock()
 EXPORT_CONFIG = {
     "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
     "site_name":      "mekariinsight",
-    "pat_name":       "your-pat-name",
-    "pat_secret":     "your-pat-secret",
+    "pat_name":       "tableau-bulk-download",
+    "pat_secret":     "Xvm3oCPtRAaeYnzgwHBM5A==:gnEcddB9yjARiH6XlwoEFlmFjMw76BAT",
     "view_id":        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb",
     "filter_field":   "Region",
     "orientation":    "Landscape",   # "Landscape" or "Portrait"
