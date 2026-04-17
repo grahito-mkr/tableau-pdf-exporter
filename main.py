@@ -45,6 +45,19 @@ jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 
 
+# ── Hardcoded export config ──────────────────────────────────────────────────
+# Set these once — users never see or touch them
+
+EXPORT_CONFIG = {
+    "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
+    "site_name":      "mekariinsight",
+    "pat_name":       "your-pat-name",
+    "pat_secret":     "your-pat-secret",
+    "view_id":        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb",
+    "filter_field":   "Region",
+    "orientation":    "Landscape",   # "Landscape" or "Portrait"
+}
+
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class ExportRequest(BaseModel):
@@ -210,6 +223,45 @@ async def start_export(req: ExportRequest):
 
     threading.Thread(target=_run_export_job, args=(job_id, req), daemon=True).start()
     return {"job_id": job_id, "total": len(req.filter_values)}
+
+
+@app.post("/export-pdf/start-preset")
+async def start_export_preset(body: dict):
+    """
+    Simplified endpoint for end users.
+    All Tableau credentials are hardcoded server-side.
+    Frontend only sends: { "filter_values": ["South", "East", ...] }
+    """
+    filter_values = body.get("filter_values", [])
+    if not filter_values:
+        raise HTTPException(400, "filter_values is empty")
+
+    req = ExportRequest(
+        tableau_server = EXPORT_CONFIG["tableau_server"],
+        site_name      = EXPORT_CONFIG["site_name"],
+        pat_name       = EXPORT_CONFIG["pat_name"],
+        pat_secret     = EXPORT_CONFIG["pat_secret"],
+        view_id        = EXPORT_CONFIG["view_id"],
+        filter_field   = EXPORT_CONFIG["filter_field"],
+        orientation    = EXPORT_CONFIG["orientation"],
+        filter_values  = filter_values,
+    )
+
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        jobs[job_id] = {
+            "status":       "queued",
+            "total":        len(filter_values),
+            "done":         0,
+            "failed":       0,
+            "failed_names": [],
+            "zip_bytes":    None,
+            "error":        None,
+            "created_at":   datetime.utcnow(),
+        }
+
+    threading.Thread(target=_run_export_job, args=(job_id, req), daemon=True).start()
+    return {"job_id": job_id, "total": len(filter_values)}
 
 
 @app.get("/export-pdf/progress/{job_id}")
