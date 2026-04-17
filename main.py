@@ -60,23 +60,24 @@ def get_client_configs():
         return val
 
     return {
-        "Testing Ship Mode - Bulk Download": {
+        # ── Key = view_id (unique, never changes, found in Tableau URL) ────────
+        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb": {
             "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
             "site_name":      "mekariinsight",
             "pat_name":       env("CLIENT_A_PAT_NAME"),
             "pat_secret":     env("CLIENT_A_PAT_SECRET"),
             "view_id":        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb",
-            "filter_field":   "Customer Name",
+            "filter_field":   "Region",
             "orientation":    "Landscape",
         },
 
         # ── Add more clients below ────────────────────────────────────────────
-        # "Client B Workbook Name": {
+        # "their-view-id-here": {
         #     "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
         #     "site_name":      "clientbsite",
         #     "pat_name":       env("CLIENT_B_PAT_NAME"),
         #     "pat_secret":     env("CLIENT_B_PAT_SECRET"),
-        #     "view_id":        "their-view-id",
+        #     "view_id":        "their-view-id-here",
         #     "filter_field":   "Customer Name",
         #     "orientation":    "Portrait",
         # },
@@ -246,17 +247,17 @@ async def start_export(body: dict):
     Start an export job. Looks up config by workbook name.
     Body: { "workbook_name": "...", "filter_values": [...] }
     """
-    workbook_name = body.get("workbook_name", "")
+    view_id       = body.get("view_id", "")
     filter_values = body.get("filter_values", [])
 
-    if not workbook_name:
-        raise HTTPException(400, "workbook_name is required")
+    if not view_id:
+        raise HTTPException(400, "view_id is required")
     if not filter_values:
         raise HTTPException(400, "filter_values is empty")
 
-    cfg = get_client_configs().get(workbook_name)
+    cfg = get_client_configs().get(view_id)
     if not cfg:
-        raise HTTPException(404, f"No config found for workbook: '{workbook_name}'")
+        raise HTTPException(404, f"No config found for view_id: '{view_id}'")
 
     req = ExportRequest(
         tableau_server = cfg["tableau_server"],
