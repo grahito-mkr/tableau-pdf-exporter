@@ -1,12 +1,7 @@
 """
-main.py — Tableau Bulk PDF Exporter (Multi-Client)
-====================================================
-One deployment serves all clients.
-Each client is identified by their Tableau workbook name.
-
-To add a new client:
-  1. Add an entry to CLIENT_CONFIGS below using their exact Tableau workbook name
-  2. Commit to GitHub → Railway auto-redeploys
+main.py — Tableau Bulk PDF Exporter
+======================================
+Exports one PDF per filter value, bundles into a ZIP file.
 
 Deploy on Railway:
   Procfile:         web: uvicorn main:app --host 0.0.0.0 --port $PORT
@@ -31,57 +26,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  CLIENT CONFIGS — add one entry per client
-#  Key = exact Tableau workbook name (case-sensitive)
+#  CONFIG — edit these values, then commit to GitHub
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── PAT credentials loaded from Railway environment variables ────────────────
-# Never hardcode secrets here. Set them in Railway dashboard → Variables tab.
-#
-# Naming convention:  {CLIENT_KEY}_PAT_NAME  and  {CLIENT_KEY}_PAT_SECRET
-# Example Railway vars for two clients:
-#   MEKARI_PAT_NAME       = tableau-bulk-download
-#   MEKARI_PAT_SECRET     = Xvm3oCPtRAaeYnzgwHBM5A==:gnEcc...
-#   CLIENT_B_PAT_NAME     = their-pat-name
-#   CLIENT_B_PAT_SECRET   = their-secret
-
-def get_client_configs():
-    """
-    Builds the client config dict at request time (not at startup),
-    so Railway environment variables are guaranteed to be available.
-    """
-    def env(key):
-        val = os.environ.get(key)
-        if not val:
-            raise RuntimeError(
-                f"Missing environment variable: {key} — "
-                f"set it in Railway dashboard → Variables tab."
-            )
-        return val
-
-    return {
-        # ── Key = view_id (unique, never changes, found in Tableau URL) ────────
-        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb": {
-            "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
-            "site_name":      "mekariinsight",
-            "pat_name":       env("CLIENT_A_PAT_NAME"),
-            "pat_secret":     env("CLIENT_A_PAT_SECRET"),
-            "view_id":        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb",
-            "filter_field":   "Region",
-            "orientation":    "Landscape",
-        },
-
-        # ── Add more clients below ────────────────────────────────────────────
-        # "their-view-id-here": {
-        #     "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
-        #     "site_name":      "clientbsite",
-        #     "pat_name":       env("CLIENT_B_PAT_NAME"),
-        #     "pat_secret":     env("CLIENT_B_PAT_SECRET"),
-        #     "view_id":        "their-view-id-here",
-        #     "filter_field":   "Customer Name",
-        #     "orientation":    "Portrait",
-        # },
-    }
+EXPORT_CONFIG = {
+    "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
+    "site_name":      "mekariinsight",
+    "pat_name":       os.environ.get("PAT_NAME", ""),
+    "pat_secret":     os.environ.get("PAT_SECRET", ""),
+    "view_id":        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb",
+    "filter_field":   "Region",
+    "orientation":    "Landscape",   # "Landscape" or "Portrait"
+}
 
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -89,7 +45,7 @@ MAX_CONCURRENT_DOWNLOADS = 8
 MAX_WORKERS              = 16
 JOB_TTL_MINUTES          = 60
 
-app = FastAPI(title="Tableau Bulk PDF Exporter", version="5.0")
+app = FastAPI(title="Tableau Bulk PDF Exporter", version="4.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 jobs: dict[str, dict] = {}
@@ -224,49 +180,23 @@ def _run_export_job(job_id, req):
 @app.get("/")
 def health():
     active = sum(1 for j in jobs.values() if j["status"] not in ("done", "error"))
-    return {"status": "ok", "version": "5.0", "active_jobs": active,
-            "registered_clients": list(get_client_configs().keys())}
-
-
-@app.get("/config")
-def get_config(workbook: str):
-    """
-    Returns the filter_field for a given workbook name.
-    Called by the HTML on load to know which filter to read.
-    e.g. GET /config?workbook=Testing+Ship+Mode+-+Bulk+Download
-    """
-    cfg = get_client_configs().get(workbook)
-    if not cfg:
-        raise HTTPException(404, f"No config found for workbook: '{workbook}'")
-    return {"filter_field": cfg["filter_field"]}
+    return {"status": "ok", "version": "4.0", "active_jobs": active}
 
 
 @app.post("/export-pdf/start")
 async def start_export(body: dict):
-    """
-    Start an export job. Looks up config by workbook name.
-    Body: { "workbook_name": "...", "filter_values": [...] }
-    """
-    view_id       = body.get("view_id", "")
     filter_values = body.get("filter_values", [])
-
-    if not view_id:
-        raise HTTPException(400, "view_id is required")
     if not filter_values:
         raise HTTPException(400, "filter_values is empty")
 
-    cfg = get_client_configs().get(view_id)
-    if not cfg:
-        raise HTTPException(404, f"No config found for view_id: '{view_id}'")
-
     req = ExportRequest(
-        tableau_server = cfg["tableau_server"],
-        site_name      = cfg["site_name"],
-        pat_name       = cfg["pat_name"],
-        pat_secret     = cfg["pat_secret"],
-        view_id        = cfg["view_id"],
-        filter_field   = cfg["filter_field"],
-        orientation    = cfg["orientation"],
+        tableau_server = EXPORT_CONFIG["tableau_server"],
+        site_name      = EXPORT_CONFIG["site_name"],
+        pat_name       = EXPORT_CONFIG["pat_name"],
+        pat_secret     = EXPORT_CONFIG["pat_secret"],
+        view_id        = EXPORT_CONFIG["view_id"],
+        filter_field   = EXPORT_CONFIG["filter_field"],
+        orientation    = EXPORT_CONFIG["orientation"],
         filter_values  = filter_values,
     )
 
@@ -285,6 +215,11 @@ async def start_export(body: dict):
 
     threading.Thread(target=_run_export_job, args=(job_id, req), daemon=True).start()
     return {"job_id": job_id, "total": len(filter_values)}
+
+
+@app.get("/config")
+def get_config():
+    return {"filter_field": EXPORT_CONFIG["filter_field"]}
 
 
 @app.get("/export-pdf/progress/{job_id}")
