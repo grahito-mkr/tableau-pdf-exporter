@@ -55,8 +55,7 @@ class ExportRequest(BaseModel):
     view_id:        str
     filter_field:   str
     filter_values:  list[str]
-    viz_width:      int = 1400
-    viz_height:     int = 900
+    orientation:    str = 'Landscape'
 
 
 class LookupRequest(BaseModel):
@@ -106,8 +105,7 @@ def safe_filename(value):
 
 
 def download_one_pdf(server, site_id, view_id, token, filter_field, filter_value,
-                     viz_width=1400, viz_height=900):
-    orientation = "Landscape" if viz_width > viz_height else "Portrait"
+                     orientation="Landscape"):
     resp = requests.get(
         f"{server}/api/3.19/sites/{site_id}/views/{view_id}/pdf",
         params={
@@ -151,7 +149,7 @@ def _run_export_job(job_id, req):
                     pdf = download_one_pdf(
                         req.tableau_server, site_id, req.view_id,
                         token, req.filter_field, value,
-                        req.viz_width, req.viz_height,
+                        req.orientation,
                     )
                     results[index] = (value, pdf, "")
                 except Exception as e:
