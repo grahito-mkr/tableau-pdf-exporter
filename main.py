@@ -1,18 +1,18 @@
 """
-main.py — Tableau Bulk PDF Exporter
-=====================================
-Exports one PDF per filter value, bundles them into a ZIP, returns the ZIP.
+main.py — Tableau Bulk PDF Exporter v5
+========================================
+Exports one PDF per filter value, bundles into a ZIP file.
+Supports custom vizWidth/vizHeight for any dashboard size.
 
-Architecture (for large batches like 800+ values):
-  1. POST /export-pdf/start  → starts background job, returns job_id immediately
-  2. GET  /export-pdf/progress/{job_id}  → poll for live progress
-  3. GET  /export-pdf/download/{job_id}  → download the ZIP when done
+Deploy on Railway:
+  - Procfile:          web: uvicorn main:app --host 0.0.0.0 --port $PORT
+  - requirements.txt:  fastapi uvicorn requests pypdf python-multipart
 
-Requirements:
-  pip install fastapi uvicorn requests pypdf python-multipart
-
-Run:
-  uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
+Endpoints:
+  POST /export-pdf/start          → start job, returns job_id
+  GET  /export-pdf/progress/{id}  → poll live progress
+  GET  /export-pdf/download/{id}  → download ZIP when done
+  GET  /                          → health check
 """
 
 import io
@@ -26,20 +26,20 @@ from datetime import datetime, timedelta
 
 import requests
 import pypdf
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-MAX_CONCURRENT_DOWNLOADS = 8   # parallel PDF downloads per job
-MAX_WORKERS              = 16  # thread pool size
-JOB_TTL_MINUTES          = 60  # how long completed jobs are kept in memory
+MAX_CONCURRENT_DOWNLOADS = 8
+MAX_WORKERS              = 16
+JOB_TTL_MINUTES          = 60
 
-# ── App setup ─────────────────────────────────────────────────────────────────
+# ── App ───────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Tableau Bulk PDF Exporter", version="4.0")
+app = FastAPI(title="Tableau Bulk PDF Exporter", version="5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,75 +48,85 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory job store  {job_id: Job}
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 
 
-# ── Models ────────────────────────────────────────────────────────────────────
+# ── Request models ────────────────────────────────────────────────────────────
 
 class ExportRequest(BaseModel):
     tableau_server: str
-    site_name: str
-    pat_name: str
-    pat_secret: str
-    view_id: str
-    filter_field: str
-    filter_values: list[str]
+    site_name:      str
+    pat_name:       str
+    pat_secret:     str
+    view_id:        str
+    filter_field:   str
+    filter_values:  list[str]
+    viz_width:      int = 1400
+    viz_height:     int = 900
+
 
 class LookupRequest(BaseModel):
     tableau_server: str
-    site_name: str
-    pat_name: str
-    pat_secret: str
+    site_name:      str
+    pat_name:       str
+    pat_secret:     str
 
 
-# ── Tableau helpers ────────────────────────────────────────────────────────────
+# ── Tableau helpers ───────────────────────────────────────────────────────────
 
-def tableau_signin(server: str, site_name: str, pat_name: str, pat_secret: str) -> tuple[str, str]:
-    """Returns (token, site_id)."""
-    url  = f"{server}/api/3.19/auth/signin"
-    resp = requests.post(url, json={
-        "credentials": {
-            "personalAccessTokenName":   pat_name,
-            "personalAccessTokenSecret": pat_secret,
-            "site": {"contentUrl": site_name},
-        }
-    }, headers={"Accept": "application/json", "Content-Type": "application/json"}, timeout=30)
-
+def tableau_signin(server, site_name, pat_name, pat_secret):
+    resp = requests.post(
+        f"{server}/api/3.19/auth/signin",
+        json={
+            "credentials": {
+                "personalAccessTokenName":   pat_name,
+                "personalAccessTokenSecret": pat_secret,
+                "site": {"contentUrl": site_name},
+            }
+        },
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        timeout=30,
+    )
     if not resp.text:
         raise RuntimeError(f"Empty Tableau auth response. HTTP {resp.status_code}")
     if resp.status_code != 200:
         raise RuntimeError(f"Tableau auth failed ({resp.status_code}): {resp.text[:400]}")
-
     data = resp.json()
     return data["credentials"]["token"], data["credentials"]["site"]["id"]
 
 
-def tableau_signout(server: str, token: str):
+def tableau_signout(server, token):
     try:
         requests.post(
             f"{server}/api/3.19/auth/signout",
-            headers={"x-tableau-auth": token}, timeout=10
+            headers={"x-tableau-auth": token},
+            timeout=10,
         )
     except Exception:
         pass
 
 
-def safe_filename(value: str) -> str:
-    """Sanitise a filter value so it's safe to use as a filename."""
-    name = re.sub(r'[\\/*?:"<>|]', "_", value)
+def safe_filename(value):
+    name = re.sub(r'[\\/*?:"<>|]', "_", value).strip()
     return (name[:100] + ".pdf") if len(name) > 100 else f"{name}.pdf"
 
 
-def download_one_pdf(
-    server: str, site_id: str, view_id: str,
-    token: str, filter_field: str, filter_value: str
-) -> bytes:
-    url = f"{server}/api/3.19/sites/{site_id}/views/{view_id}/pdf"
+def download_one_pdf(server, site_id, view_id, token,
+                     filter_field, filter_value, viz_width, viz_height):
+    """
+    type=unformatted + vizWidth/vizHeight = no paper size constraints.
+    Renders the dashboard at exactly the pixel size you specify,
+    so wide or narrow dashboards all export correctly.
+    """
     resp = requests.get(
-        url,
-        params={"type": "A4", "orientation": "Portrait", f"vf_{filter_field}": filter_value},
+        f"{server}/api/3.19/sites/{site_id}/views/{view_id}/pdf",
+        params={
+            "type":      "unformatted",
+            "vizWidth":  viz_width,
+            "vizHeight": viz_height,
+            f"vf_{filter_field}": filter_value,
+        },
         headers={"x-tableau-auth": token},
         timeout=90,
     )
@@ -125,51 +135,35 @@ def download_one_pdf(
     return resp.content
 
 
-# ── Background job logic ───────────────────────────────────────────────────────
+# ── Background job ────────────────────────────────────────────────────────────
 
-def _run_export_job(job_id: str, req: ExportRequest):
-    """
-    Runs in a background thread.
-    Downloads PDFs concurrently and writes them into a ZIP in memory.
-    Updates the shared job dict with live progress.
-    """
-    def update(done=None, failed=None, status=None, error=None, zip_bytes=None):
+def _run_export_job(job_id, req):
+    token = None
+
+    def update(**kwargs):
         with jobs_lock:
-            j = jobs[job_id]
-            if done       is not None: j["done"]      = done
-            if failed     is not None: j["failed"]    = failed
-            if status     is not None: j["status"]    = status
-            if error      is not None: j["error"]     = error
-            if zip_bytes  is not None: j["zip_bytes"] = zip_bytes
+            jobs[job_id].update(kwargs)
 
     try:
-        # Step 1 — Authenticate
         update(status="signing_in")
         token, site_id = tableau_signin(
             req.tableau_server, req.site_name,
-            req.pat_name, req.pat_secret
+            req.pat_name, req.pat_secret,
         )
 
-        total       = len(req.filter_values)
-        done_count  = 0
-        fail_count  = 0
-        fail_names: list[str] = []
-
-        # Step 2 — Download PDFs concurrently with a semaphore
-        update(status="exporting")
-
-        # We'll store results in order: list of (filter_value, bytes | None, error_msg)
-        results: list[tuple[str, bytes | None, str]] = [None] * total
-
+        total   = len(req.filter_values)
+        results = [None] * total
         semaphore = threading.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
-        def fetch(index: int, value: str):
-            nonlocal done_count, fail_count
+        update(status="exporting")
+
+        def fetch(index, value):
             with semaphore:
                 try:
                     pdf = download_one_pdf(
                         req.tableau_server, site_id, req.view_id,
-                        token, req.filter_field, value
+                        token, req.filter_field, value,
+                        req.viz_width, req.viz_height,
                     )
                     results[index] = (value, pdf, "")
                 except Exception as e:
@@ -185,11 +179,10 @@ def _run_export_job(job_id: str, req: ExportRequest):
             futures = [pool.submit(fetch, i, v) for i, v in enumerate(req.filter_values)]
             concurrent.futures.wait(futures)
 
-        # Step 3 — Package into ZIP
         update(status="zipping")
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-            for (value, pdf_bytes, err) in results:
+            for value, pdf_bytes, _ in results:
                 if pdf_bytes:
                     zf.writestr(safe_filename(value), pdf_bytes)
 
@@ -199,39 +192,28 @@ def _run_export_job(job_id: str, req: ExportRequest):
     except Exception as e:
         update(status="error", error=f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}")
     finally:
-        try:
+        if token:
             tableau_signout(req.tableau_server, token)
-        except Exception:
-            pass
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/")
 def health():
-    return {
-        "status":  "ok",
-        "version": "4.0",
-        "active_jobs": len([j for j in jobs.values() if j["status"] not in ("done", "error")])
-    }
+    active = sum(1 for j in jobs.values() if j["status"] not in ("done", "error"))
+    return {"status": "ok", "version": "5.0", "active_jobs": active}
 
 
 @app.post("/export-pdf/start")
 async def start_export(req: ExportRequest):
-    """
-    Starts a background export job.
-    Returns immediately with a job_id the client can poll.
-    """
     if not req.filter_values:
         raise HTTPException(400, "filter_values is empty")
 
     job_id = str(uuid.uuid4())
-    total  = len(req.filter_values)
-
     with jobs_lock:
         jobs[job_id] = {
-            "status":       "queued",    # queued | signing_in | exporting | zipping | done | error
-            "total":        total,
+            "status":       "queued",
+            "total":        len(req.filter_values),
             "done":         0,
             "failed":       0,
             "failed_names": [],
@@ -240,29 +222,22 @@ async def start_export(req: ExportRequest):
             "created_at":   datetime.utcnow(),
         }
 
-    # Kick off in background thread
-    t = threading.Thread(target=_run_export_job, args=(job_id, req), daemon=True)
-    t.start()
-
-    return {"job_id": job_id, "total": total}
+    threading.Thread(target=_run_export_job, args=(job_id, req), daemon=True).start()
+    return {"job_id": job_id, "total": len(req.filter_values)}
 
 
 @app.get("/export-pdf/progress/{job_id}")
 async def get_progress(job_id: str):
-    """Poll this endpoint for live progress."""
     with jobs_lock:
         j = jobs.get(job_id)
-
     if j is None:
         raise HTTPException(404, "Job not found")
-
-    # Don't leak zip_bytes in progress response
     return {
         "status":       j["status"],
         "total":        j["total"],
         "done":         j["done"],
         "failed":       j["failed"],
-        "failed_names": j["failed_names"][:20],  # first 20 failures only
+        "failed_names": j["failed_names"][:20],
         "error":        j["error"],
         "pct":          round(j["done"] / j["total"] * 100) if j["total"] else 0,
     }
@@ -270,25 +245,21 @@ async def get_progress(job_id: str):
 
 @app.get("/export-pdf/download/{job_id}")
 async def download_zip(job_id: str):
-    """Download the ZIP file once the job is done."""
     with jobs_lock:
         j = jobs.get(job_id)
-
     if j is None:
         raise HTTPException(404, "Job not found")
     if j["status"] == "error":
         raise HTTPException(500, j["error"] or "Export failed")
     if j["status"] != "done":
-        raise HTTPException(409, f"Job not finished yet (status: {j['status']})")
+        raise HTTPException(409, f"Job not ready yet (status: {j['status']})")
     if not j["zip_bytes"]:
-        raise HTTPException(500, "ZIP is empty — all exports failed")
+        raise HTTPException(500, "ZIP is empty — all exports may have failed")
 
     filename = f"tableau_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.zip"
-
-    # Clean up job after serving (save memory)
     with jobs_lock:
         zip_data = j["zip_bytes"]
-        jobs[job_id]["zip_bytes"] = None  # free memory immediately after first download
+        jobs[job_id]["zip_bytes"] = None
 
     return StreamingResponse(
         io.BytesIO(zip_data),
@@ -298,47 +269,48 @@ async def download_zip(job_id: str):
 
 
 @app.delete("/export-pdf/job/{job_id}")
-async def cancel_job(job_id: str):
-    """Clean up a job from memory."""
+async def delete_job(job_id: str):
     with jobs_lock:
-        if job_id in jobs:
-            del jobs[job_id]
+        jobs.pop(job_id, None)
     return {"deleted": job_id}
 
 
 @app.post("/get-view-id")
 async def get_view_id(req: LookupRequest):
-    """List all views in the site so you can find the right view_id."""
     token, site_id = tableau_signin(
-        req.tableau_server, req.site_name, req.pat_name, req.pat_secret
+        req.tableau_server, req.site_name,
+        req.pat_name, req.pat_secret,
     )
     try:
         headers = {"x-tableau-auth": token, "Accept": "application/json"}
-        wbs_resp = requests.get(
+        wbs = requests.get(
             f"{req.tableau_server}/api/3.19/sites/{site_id}/workbooks",
-            headers=headers, timeout=30
-        )
-        workbooks = wbs_resp.json().get("workbooks", {}).get("workbook", [])
+            headers=headers, timeout=30,
+        ).json().get("workbooks", {}).get("workbook", [])
+
         result = []
-        for wb in workbooks:
-            vr = requests.get(
+        for wb in wbs:
+            views = requests.get(
                 f"{req.tableau_server}/api/3.19/sites/{site_id}/workbooks/{wb['id']}/views",
-                headers=headers, timeout=30
-            )
-            for v in vr.json().get("views", {}).get("view", []):
-                result.append({"workbook": wb["name"], "view_name": v["name"], "view_id": v["id"]})
+                headers=headers, timeout=30,
+            ).json().get("views", {}).get("view", [])
+            for v in views:
+                result.append({
+                    "workbook":  wb["name"],
+                    "view_name": v["name"],
+                    "view_id":   v["id"],
+                })
         return {"views": result}
     finally:
         tableau_signout(req.tableau_server, token)
 
 
-# ── Periodic cleanup ──────────────────────────────────────────────────────────
+# ── Cleanup thread ────────────────────────────────────────────────────────────
 
-def _cleanup_old_jobs():
-    """Remove jobs older than JOB_TTL_MINUTES. Runs in a background thread."""
+def _cleanup_loop():
     import time
     while True:
-        time.sleep(300)  # check every 5 min
+        time.sleep(300)
         cutoff = datetime.utcnow() - timedelta(minutes=JOB_TTL_MINUTES)
         with jobs_lock:
             stale = [jid for jid, j in jobs.items() if j["created_at"] < cutoff]
@@ -347,4 +319,4 @@ def _cleanup_old_jobs():
         if stale:
             print(f"Cleaned up {len(stale)} stale jobs")
 
-threading.Thread(target=_cleanup_old_jobs, daemon=True).start()
+threading.Thread(target=_cleanup_loop, daemon=True).start()
