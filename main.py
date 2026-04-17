@@ -81,7 +81,8 @@ def download_view_pdf(server: str, site_id: str, view_id: str, token: str, filte
     params = {
         "type": "A4",
         "orientation": "Portrait",
-        f"vf_{filter_field}": filter_value
+        f"vf_{filter_field}": filter_value,
+        "sheets": "TestBulkDownload"
     }
     headers = {"x-tableau-auth": token}
     response = requests.get(url, params=params, headers=headers, timeout=60)
