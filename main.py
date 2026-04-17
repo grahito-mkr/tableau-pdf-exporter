@@ -45,39 +45,42 @@ from pydantic import BaseModel
 #   CLIENT_B_PAT_NAME     = their-pat-name
 #   CLIENT_B_PAT_SECRET   = their-secret
 
-def env(key):
-    """Read a required env var. Raises a clear error if missing."""
-    val = os.environ.get(key)
-    if not val:
-        raise RuntimeError(
-            f"Missing environment variable: {key}\n"
-            f"Set it in Railway dashboard → Variables tab."
-        )
-    return val
+def get_client_configs():
+    """
+    Builds the client config dict at request time (not at startup),
+    so Railway environment variables are guaranteed to be available.
+    """
+    def env(key):
+        val = os.environ.get(key)
+        if not val:
+            raise RuntimeError(
+                f"Missing environment variable: {key} — "
+                f"set it in Railway dashboard → Variables tab."
+            )
+        return val
 
+    return {
+        "Testing Ship Mode - Bulk Download": {
+            "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
+            "site_name":      "mekariinsight",
+            "pat_name":       env("CLIENT_A_PAT_NAME"),
+            "pat_secret":     env("CLIENT_A_PAT_SECRET"),
+            "view_id":        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb",
+            "filter_field":   "Customer Name",
+            "orientation":    "Landscape",
+        },
 
-CLIENT_CONFIGS = {
-    "Testing Ship Mode - Bulk Download": {
-        "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
-        "site_name":      "mekariinsight",
-        "pat_name":       env("CLIENT_A_PAT_NAME"),
-        "pat_secret":     env("CLIENT_A_PAT_SECRET"),
-        "view_id":        "f7c4dfcd-da22-42f9-835b-e2ddeed7bffb",
-        "filter_field":   "Customer Name",
-        "orientation":    "Landscape",
-    },
-
-    # ── Add more clients below ────────────────────────────────────────────────
-    # "Client B Workbook Name": {
-    #     "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
-    #     "site_name":      "clientbsite",
-    #     "pat_name":       env("CLIENT_B_PAT_NAME"),
-    #     "pat_secret":     env("CLIENT_B_PAT_SECRET"),
-    #     "view_id":        "their-view-id",
-    #     "filter_field":   "Customer Name",
-    #     "orientation":    "Portrait",
-    # },
-}
+        # ── Add more clients below ────────────────────────────────────────────
+        # "Client B Workbook Name": {
+        #     "tableau_server": "https://prod-apsoutheast-a.online.tableau.com",
+        #     "site_name":      "clientbsite",
+        #     "pat_name":       env("CLIENT_B_PAT_NAME"),
+        #     "pat_secret":     env("CLIENT_B_PAT_SECRET"),
+        #     "view_id":        "their-view-id",
+        #     "filter_field":   "Customer Name",
+        #     "orientation":    "Portrait",
+        # },
+    }
 
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -221,7 +224,7 @@ def _run_export_job(job_id, req):
 def health():
     active = sum(1 for j in jobs.values() if j["status"] not in ("done", "error"))
     return {"status": "ok", "version": "5.0", "active_jobs": active,
-            "registered_clients": list(CLIENT_CONFIGS.keys())}
+            "registered_clients": list(get_client_configs().keys())}
 
 
 @app.get("/config")
@@ -231,7 +234,7 @@ def get_config(workbook: str):
     Called by the HTML on load to know which filter to read.
     e.g. GET /config?workbook=Testing+Ship+Mode+-+Bulk+Download
     """
-    cfg = CLIENT_CONFIGS.get(workbook)
+    cfg = get_client_configs().get(workbook)
     if not cfg:
         raise HTTPException(404, f"No config found for workbook: '{workbook}'")
     return {"filter_field": cfg["filter_field"]}
@@ -251,7 +254,7 @@ async def start_export(body: dict):
     if not filter_values:
         raise HTTPException(400, "filter_values is empty")
 
-    cfg = CLIENT_CONFIGS.get(workbook_name)
+    cfg = get_client_configs().get(workbook_name)
     if not cfg:
         raise HTTPException(404, f"No config found for workbook: '{workbook_name}'")
 
