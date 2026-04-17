@@ -115,18 +115,34 @@ def safe_filename(value):
 def download_one_pdf(server, site_id, view_id, token,
                      filter_field, filter_value, viz_width, viz_height):
     """
-    Uses A4 paper size. Orientation is chosen automatically:
-    - viz_width > viz_height  → Landscape  (wide dashboards)
-    - viz_width <= viz_height → Portrait   (tall/narrow dashboards)
+    Uses A4 paper size. Orientation chosen from width vs height.
+    Manually encodes the vf_ filter key using %20 (not +) for spaces,
+    because Tableau Online ignores filters when + encoding is used.
     """
+    import urllib.parse
+
     orientation = "Landscape" if viz_width > viz_height else "Portrait"
+
+    # Build base params (safe characters only — no spaces)
+    base_params = urllib.parse.urlencode({
+        "type":        "A4",
+        "orientation": orientation,
+    })
+
+    # Encode filter key and value separately using %20 for spaces
+    filter_key   = urllib.parse.quote(f"vf_{filter_field}", safe="")
+    filter_val   = urllib.parse.quote(str(filter_value),   safe="")
+    filter_param = f"{filter_key}={filter_val}"
+
+    full_url = (
+        f"{server}/api/3.19/sites/{site_id}/views/{view_id}/pdf"
+        f"?{base_params}&{filter_param}"
+    )
+
+    print(f"  PDF request: ...{view_id}/pdf?{base_params}&{filter_param}")
+
     resp = requests.get(
-        f"{server}/api/3.19/sites/{site_id}/views/{view_id}/pdf",
-        params={
-            "type":        "A4",
-            "orientation": orientation,
-            f"vf_{filter_field}": filter_value,
-        },
+        full_url,
         headers={"x-tableau-auth": token},
         timeout=90,
     )
